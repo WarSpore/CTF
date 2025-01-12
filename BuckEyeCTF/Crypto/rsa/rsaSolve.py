@@ -1,0 +1,12 @@
+from Crypto.Util.number import bytes_to_long, getPrime,long_to_bytes
+
+p = 213055785127022839309619937270901673863 
+q = 310165339100312907369816767764432814137
+n = p*q
+e = 65537
+c = 19146395818313260878394498164948015155839880044374872805448779372117637653026
+phi = (p-1)*(q-1)
+d = pow(e,-1,phi)
+decrypt = pow(c,d,n)
+print(long_to_bytes(decrypt))
+
