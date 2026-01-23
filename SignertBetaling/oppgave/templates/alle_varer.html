@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Mine varer{% endblock %}
+{% block content %}
+<h2>Mine varer</h1>
+  <p>
+    Her er alle varer:
+  </p>
+  <div class="row">
+  {% for vare in varer %}
+    <div class="col col-4">
+      <div class="card" style="width: 90%; margin:auto">
+      <h3 class="card-title" style="padding-left: 1.25rem">{{ vare.navn }}</h3>
+      <div class="card-body">
+        <p>
+          Pris: {{ vare.pris }} kr
+        </p>
+        <form action="/kjøp" method="post">
+          <input type="hidden" name="vare" value="{{ vare.navn }}">
+          <button class="btn btn-success" type="submit">Kjøp</button>
+        </form>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+  </div>
+{% endblock %}

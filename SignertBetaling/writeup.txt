@@ -1,0 +1,10 @@
+https://frereit.de/aes_gcm/
+
+Svakheten er at noncen blir gjenbrukt.
+Dette gjør at man lett kan få keystreamen som man kan bruke på en virkårlig plaintext ved å ta k1 = c1 xor pt1
+
+Hovedproblemet er signaturen, men den er også mulig å finne. Formelen er (block1_i xor block2_i)*H^(n-i)...+(block1_n xor block2_n)*H+(lenblock1 xor lenblock2) + T1xorT2 = 0
+
+Dette får man ved å xore to ciphertexts og også tags. Dette gir et polynom man kan løse med sage. Noe tricky var lenblock som er antall bits i ciphermessage. 
+Andre vanskelig er at paddingen må line opp. At det du xorer må ha bytesene linet opp. feks 7 xor 70 funker ikke. Man må ha 40 xor 50.
+Samme gjaldt flagg.

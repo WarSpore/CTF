@@ -1,0 +1,139 @@
+import base64
+from sage.all import GF, PolynomialRing
+
+def bytes_to_field(b):
+    # b: a bytes object (length ≤ 16). Pad on the right with zeroes if needed.
+    b = b.ljust(16, b'\x00')
+    v = int.from_bytes(b, 'big')
+    # GCM uses a “reversed” bit order.
+    v_bin = format(v, '0128b')
+    v_rev = int(v_bin[::-1], 2)
+    return F.fetch_int(v_rev)
+
+def field_to_bytes(f_elem):
+    # Convert a GF element back to 16 bytes (with bit reversal).
+    v = f_elem.integer_representation()
+    v_bin = format(v, '0128b')
+    v_rev = int(v_bin[::-1], 2)
+    return v_rev.to_bytes(16, 'big')
+
+def xor_bytes(a, b):
+    return bytes(x ^^ y for x, y in zip(a, b))
+
+# Message 1 (M1)
+U10 = bytes.fromhex("0662ad21d841a0405a16771d130a2ef1")
+U11 = bytes.fromhex("16908452fcad92196b16f8e3d5597bf2")
+U12 = bytes.fromhex("00000000000000000000000000000100")
+T1  = bytes.fromhex("1d33f34effbd2f609b271083d3f95ebe")
+# Message 2 (M2)
+U20 = bytes.fromhex("0662ad21d841a0405a167610130a2ef1")
+U21 = bytes.fromhex("16908452fcad92196b18e1f8d9597bf2")
+U22 = bytes.fromhex("00000000000000000000000000000100")
+T2  = bytes.fromhex("3dfef6b02d4f02580528fba8185c23bf")
+# Message 3 (M3) – used for verification
+U30 = bytes.fromhex("0662ad21d841a0405a167810130a2ef1")
+U31 = bytes.fromhex("16908452fcad92196b19e3e1d9597bf2")
+U32 = bytes.fromhex("00000000000000000000000000000100")
+T3  = bytes.fromhex("f3b0b04c848942d1e8638aba1b057bbc")
+
+
+F_U10 = bytes_to_field(U10)
+F_U11 = bytes_to_field(U11)
+F_U12 = bytes_to_field(U12)
+F_T1  = bytes_to_field(T1)
+
+F_U20 = bytes_to_field(U20)
+F_U21 = bytes_to_field(U21)
+F_U22 = bytes_to_field(U22)
+F_T2  = bytes_to_field(T2)
+
+F_U30 = bytes_to_field(U30)
+F_U31 = bytes_to_field(U31)
+F_U32 = bytes_to_field(U32)
+F_T3  = bytes_to_field(T3)
+
+Delta1 = F_U10 + F_U20
+Delta2 = F_U11 + F_U21
+Delta3 = F_U12 + F_U22
+DeltaTag = F_T1  + F_T2
+
+R = PolynomialRing(F, 'H')
+H_var = R.gen()
+f_poly = Delta1 * H_var**3 + Delta2 * H_var**2 + Delta3 * H_var + DeltaTag
+print("Polynomial f(H):")
+print(f_poly)
+
+f_factors = f_poly.factor()
+print("\nFactorization:")
+print(f_factors)
+
+candidates = []
+for factor, mult in f_factors:
+    if factor.degree() == 1:
+        # A linear factor looks like (H + a); in GF(2), –a = a.
+        a = -factor[0]
+        candidates.extend([a]*mult)
+
+print("\nCandidate H values:")
+for cand in candidates:
+    print(field_to_bytes(cand).hex())
+
+def compute_ghash(FU0, FU1, FU2, H_candidate):
+    return FU0 * H_candidate**3 + FU1 * H_candidate**2 + FU2 * H_candidate
+
+correct_H = None
+EkY0 = None
+for cand in candidates:
+    GHASH1 = compute_ghash(F_U10, F_U11, F_U12, cand)
+    # Ek(Y₀) = T₁ ⊕ GHASH₁.
+    EkY0_candidate = F_T1 + GHASH1
+    GHASH3 = compute_ghash(F_U30, F_U31, F_U32, cand)
+    if EkY0_candidate + GHASH3 == F_T3:
+        correct_H = cand
+        EkY0 = EkY0_candidate
+        break
+
+if correct_H is None:
+    print("Failed to recover H!")
+    exit(1)
+else:
+    print("\nRecovered H:", field_to_bytes(correct_H).hex())
+    print("Recovered Ek(Y0):", field_to_bytes(EkY0).hex())
+
+ciphertext1 = bytes.fromhex("0662ad21d841a0405a167615130a2ef116908452fcad92196b1ff0fadd1504d2eb")
+
+pt1 = b"{'saldo': 90, 'varer': ['Banan']}"
+print(len(pt1))
+keystream = xor_bytes(ciphertext1, pt1)
+print("\nRecovered keystream (hex):", keystream.hex())
+pt_forge = b"{'saldo': 80, 'varer': ['Flagg']}"
+print(len(pt_forge),len(ciphertext1))
+
+
+ciphertext_forge = xor_bytes(pt_forge, keystream)
+print("\nForged ciphertext (hex):", ciphertext_forge.hex())
+
+U0_forge = ciphertext_forge[:16]
+U1_forge = ciphertext_forge[16:32]
+U2_forge = ciphertext_forge[32:]
+print(ciphertext_forge)
+U2_forge_padded = U2_forge.ljust(16, b'\x00')
+L_block = (b'\x00' * 8) + (int(264)).to_bytes(8, 'big')
+
+F_U0_forge = bytes_to_field(U0_forge)
+F_U1_forge = bytes_to_field(U1_forge)
+F_U2_forge = bytes_to_field(U2_forge_padded)
+F_L = bytes_to_field(L_block)
+
+GHASH_forge = correct_H**4 * F_U0_forge + correct_H**3 * F_U1_forge + correct_H**2 * F_U2_forge + correct_H * F_L
+
+
+print(EkY0)
+
+forged_tag_field = EkY0 + GHASH_forge
+forged_tag = field_to_bytes(forged_tag_field)
+print("\nForged tag (hex):", forged_tag.hex())
+
+cookie = base64.b64encode(ciphertext_forge).rstrip(b"=") + b"." + base64.b64encode(forged_tag).rstrip(b"=")
+print("\nForged cookie:")
+print(cookie.decode())

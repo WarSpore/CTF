@@ -1,0 +1,127 @@
+#!/usr/bin/env sage
+# This script implements the AES-GCM nonce reuse attack as described in the blog post.
+# It recovers the GHASH key H and the Ek(Y0) value (the “masked” Y0) given three messages
+# that were encrypted with the same key and nonce.
+
+# Define the finite field GF(2^128) using the GCM reduction polynomial
+# GCM uses the irreducible polynomial: x^128 + x^7 + x^2 + x + 1 over GF(2)
+F = GF(2**128, 'a', modulus=x**128 + x**7 + x**2 + x + 1)
+
+# Create a polynomial ring in H over F
+R = PolynomialRing(F, 'H')
+H_var = R.gen()
+
+# --- Utility functions ---
+def hex_to_field(hexstr):
+    """
+    Converts a 32-hex-digit (128-bit) string into an element of GF(2^128)
+    following the GCM convention where the most significant bit corresponds to x^0.
+    (I.e. we reverse the usual bit order.)
+    """
+    b = bytes.fromhex(hexstr)
+    # Ensure exactly 16 bytes (pad on the left if needed)
+    b = b.rjust(16, b'\x00')
+    v = int.from_bytes(b, 'big')
+    # Represent as a 128-bit binary string and reverse it.
+    v_bin = format(v, '0128b')
+    v_rev = int(v_bin[::-1], 2)
+    return F.fetch_int(v_rev)
+
+def field_to_hex(field_elem):
+    """
+    Converts a GF(2^128) element back to a 32-digit hex string following the same
+    bit-reversal convention.
+    """
+    v = field_elem.integer_representation()
+    v_bin = format(v, '0128b')
+    v_rev = int(v_bin[::-1], 2)
+    return format(v_rev, '032x')
+
+# --- Provided Data from the Challenge ---
+# Message 1 (M1)
+# These blocks are the ones used in the GHASH computation for message 1.
+# U1₀ is the first ciphertext block, U1₁ the padded remainder,
+# and U1₂ is the length block (ciphertext length in bits).
+U10 = hex_to_field("dfc951cfd6a9ed8e6d05ab1c0db08aae")
+U11 = hex_to_field("25a76890d56901700000000000000000")
+U12 = hex_to_field("000000000000000000000000000000c0")
+T1  = hex_to_field("ce3141cd2e1288a138ef8e55bdf54ed5")  # Authentication tag for message 1
+
+# Message 2 (M2)
+U20 = hex_to_field("754709425f0363d6e08c0192553d0304")
+U21 = hex_to_field("abffe5197fe759fd7c00000000000000")
+U22 = hex_to_field("000000000000000000000000000000c8")
+T2  = hex_to_field("c6e5f4d454408ab3d328b9eb7c996fbb")  # Tag for message 2
+
+# Message 3 (M3) -- used for verification.
+U30 = hex_to_field("698e97cb271faa4869f41d5bcbb47b18")
+U31 = hex_to_field("62616c61632ec7740400000000000000")
+U32 = hex_to_field("000000000000000000000000000000c8")
+T3  = hex_to_field("cdce7aca9f6a4c83de57952e00dcb00f")  # Tag for message 3
+
+# --- Constructing the Polynomial Equation ---
+# Because the same nonce was reused, the Ek(Y₀) value cancels when we XOR (add) the two tag equations.
+# In GHASH, if for a message with blocks U₀, U₁, U₂ the tag is:
+#    T = (U₀ ⨂ H^3) ⊕ (U₁ ⨂ H^2) ⊕ (U₂ ⨂ H) ⊕ Ek(Y₀)
+# then for messages 1 and 2 we have:
+#    T₁ ⊕ T₂ = ((U10 ⊕ U20) ⨂ H^3) ⊕ ((U11 ⊕ U21) ⨂ H^2) ⊕ ((U12 ⊕ U22) ⨂ H)
+# We now move T₁ ⊕ T₂ to the left so that our polynomial in H is:
+#    ( (U10⊕U20)*H^3 ) ⊕ ( (U11⊕U21)*H^2 ) ⊕ ( (U12⊕U22)*H ) ⊕ (T₁ ⊕ T₂ ) = 0
+
+Delta1   = U10 + U20   # Note: in GF(2^128), addition is XOR.
+Delta2   = U11 + U21
+Delta3   = U12 + U22
+DeltaTag = T1  + T2
+
+# Our polynomial f(H) is:
+f_poly = Delta1 * H_var^3 + Delta2 * H_var^2 + Delta3 * H_var + DeltaTag
+print("Polynomial f(H) to solve:")
+print(f_poly)
+
+# --- Factor the Polynomial ---
+# We factor f_poly over GF(2^128). (The Cantor–Zassenhaus algorithm is used internally.)
+f_factors = f_poly.factor()
+print("\nFactorization of f(H):")
+print(f_factors)
+
+# For our attack we need linear factors (degree 1) whose roots are candidate H values.
+candidates = []
+for factor, multiplicity in f_factors:
+    if factor.degree() == 1:
+        # A linear factor is of the form H + a (recall that in GF(2), -a = a).
+        a = -factor[0]
+        candidates.extend([a] * multiplicity)
+
+print("\nCandidate GHASH keys (H):")
+for cand in candidates:
+    print(field_to_hex(cand))
+
+# --- Verification using Message 3 ---
+# Define a helper to compute GHASH from three blocks and a candidate H.
+def compute_ghash(U0, U1, U2, H_candidate):
+    # GHASH = (U0 ⨂ H^3) ⊕ (U1 ⨂ H^2) ⊕ (U2 ⨂ H)
+    return U0 * H_candidate^3 + U1 * H_candidate^2 + U2 * H_candidate
+
+# For each candidate, we “recover” Ek(Y₀) from message 1:
+#   Ek(Y₀) = T₁ ⊕ GHASH₁, where GHASH₁ = (U10 ⨂ H^3) ⊕ (U11 ⨂ H^2) ⊕ (U12 ⨂ H)
+# Then for message 3 we compute:
+#   computed_T3 = GHASH₃ ⊕ Ek(Y₀)
+# and check if it equals the actual tag T₃.
+correct_H = None
+for cand in candidates:
+    GHASH1 = compute_ghash(U10, U11, U12, cand)
+    EkY0 = T1 + GHASH1   # '+' is XOR in GF(2^128)
+    GHASH3 = compute_ghash(U30, U31, U32, cand)
+    computed_T3 = GHASH3 + EkY0
+    print("\nTesting candidate H =", field_to_hex(cand))
+    print("Computed T3 =", field_to_hex(computed_T3))
+    print("Actual   T3 =", field_to_hex(T3))
+    if computed_T3 == T3:
+        correct_H = cand
+        print("==> Candidate matches the third tag!")
+
+if correct_H is not None:
+    print("\nRecovered GHASH key H =", field_to_hex(correct_H))
+    print("Recovered Ek(Y0)  =", field_to_hex(T1 + compute_ghash(U10, U11, U12, correct_H)))
+else:
+    print("\nNo candidate H produced a matching tag for message 3.")
